@@ -743,6 +743,11 @@ impl Client {
     }
 
     /// Read table data by BigQuery Storage Read API.
+    ///
+    /// By default, the table's project_id is used for both data access and billing.
+    /// For cross-project scenarios, use `ReadTableOption::with_job_project_id()` to specify
+    /// a different project for billing and quota.
+    ///
     /// ```rust
     /// use google_cloud_bigquery::storage::row::Row;
     /// use google_cloud_bigquery::client::Client;
@@ -775,7 +780,7 @@ impl Client {
         let read_session = client
             .create_read_session(
                 CreateReadSessionRequest {
-                    parent: format!("projects/{}", table.project_id),
+                    parent: format!("projects/{}", option.job_project_id.as_ref().unwrap_or(&table.project_id)),
                     read_session: Some(ReadSession {
                         name: "".to_string(),
                         expire_time: None,
@@ -809,6 +814,7 @@ pub struct ReadTableOption {
     session_retry_setting: Option<RetrySetting>,
     read_rows_retry_setting: Option<RetrySetting>,
     max_stream_count: i32,
+    job_project_id: Option<String>,
 }
 
 impl ReadTableOption {
@@ -839,6 +845,11 @@ impl ReadTableOption {
 
     pub fn with_max_stream_count(mut self, value: i32) -> Self {
         self.max_stream_count = value;
+        self
+    }
+
+    pub fn with_job_project_id(mut self, value: String) -> Self {
+        self.job_project_id = Some(value);
         self
     }
 }
