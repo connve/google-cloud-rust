@@ -1,6 +1,4 @@
 use google_cloud_gax::conn::{Channel, ConnectionManager, ConnectionOptions, Error};
-use std::time::Duration;
-
 use google_cloud_longrunning::autogen::operations_client::OperationsClient;
 
 use crate::admin::database::database_admin_client::DatabaseAdminClient;
@@ -35,8 +33,11 @@ impl Client {
 
 async fn internal_client(config: &AdminClientConfig) -> Result<(Channel, OperationsClient), Error> {
     let conn_options = ConnectionOptions {
-        timeout: Some(Duration::from_secs(30)),
-        connect_timeout: Some(Duration::from_secs(30)),
+        timeout: Some(config.timeout),
+        connect_timeout: Some(config.connect_timeout),
+        http2_keep_alive_interval: config.http2_keep_alive_interval,
+        keep_alive_timeout: config.keep_alive_timeout,
+        keep_alive_while_idle: config.keep_alive_while_idle,
     };
     let conn_pool = ConnectionManager::new(1, SPANNER, AUDIENCE, &config.environment, &conn_options).await?;
     let conn = conn_pool.conn();

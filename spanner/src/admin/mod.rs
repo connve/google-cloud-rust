@@ -18,6 +18,13 @@ pub const SCOPES: [&str; 2] = [
 pub struct AdminClientConfig {
     /// Runtime project
     pub environment: Environment,
+    /// Timeout applied to each gRPC request on the admin channel.
+    pub timeout: Duration,
+    /// Timeout for establishing a new gRPC connection.
+    pub connect_timeout: Duration,
+    pub http2_keep_alive_interval: Option<Duration>,
+    pub keep_alive_timeout: Option<Duration>,
+    pub keep_alive_while_idle: Option<bool>,
 }
 
 impl Default for AdminClientConfig {
@@ -27,6 +34,11 @@ impl Default for AdminClientConfig {
                 Some(v) => Environment::Emulator(v),
                 None => Environment::GoogleCloud(Box::new(NoopTokenSourceProvider {})),
             },
+            timeout: Duration::from_secs(30),
+            connect_timeout: Duration::from_secs(30),
+            http2_keep_alive_interval: None,
+            keep_alive_timeout: None,
+            keep_alive_while_idle: None,
         }
     }
 }

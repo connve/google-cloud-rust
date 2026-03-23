@@ -8,7 +8,7 @@ license = "MIT"
 name = "gcloud-storage"
 readme = "README.md"
 repository = "https://github.com/yoshidan/google-cloud-rust/tree/main/storage"
-version = "1.2.0"
+version = "1.3.0"
 
 [lib]
 doctest = false
@@ -24,12 +24,12 @@ once_cell = "1.18"
 percent-encoding = "2.3"
 pkcs8 = {version = "0.10", features = ["pem"]}
 regex = "1.9"
-reqwest = {version = "0.12", features = [
+reqwest = {version = "0.13", features = [
   "json",
   "stream",
   "multipart",
 ], default-features = false}
-reqwest-middleware = {version = "0.4", features = ["json", "multipart"]}
+reqwest-middleware = {version = "0.5", features = ["json", "multipart", "query"]}
 ring = "0.17"
 serde = {version = "1.0", features = ["derive"]}
 serde_json = "1.0"
@@ -46,8 +46,8 @@ tokio = {version = "1.32", features = ["macros"]}
 tracing = "0.1"
 url = "2.4"
 
-google-cloud-auth = {package = "gcloud-auth", optional = true, version = "1.2.0", path = "../foundation/auth", default-features = false}
-google-cloud-metadata = {package = "gcloud-metadata", optional = true, version = "1.0.1", path = "../foundation/metadata"}
+google-cloud-auth = {package = "gcloud-auth", optional = true, version = "1.3.0", path = "../foundation/auth", default-features = false}
+google-cloud-metadata = {package = "gcloud-metadata", optional = true, version = "1.0.2", path = "../foundation/metadata"}
 
 [dev-dependencies]
 ctor = "0.5"
@@ -58,11 +58,12 @@ tracing-subscriber = {version = "0.3.17", features = ["env-filter"]}
 
 [features]
 auth = ["google-cloud-auth", "google-cloud-metadata"]
-default = ["default-tls", "auth", "jwt-aws-lc-rs"]
-default-tls = ["reqwest/default-tls", "google-cloud-auth?/default-tls"]
+default = ["rustls-tls", "auth", "jwt-aws-lc-rs"]
+rustls-tls = ["google-cloud-auth?/rustls-tls"]
+native-tls = ["google-cloud-auth?/native-tls"]
+rustls-no-provider = ["google-cloud-auth?/rustls-no-provider"]
 external-account = ["google-cloud-auth?/external-account"]
 hickory-dns = ["reqwest/hickory-dns", "google-cloud-auth?/hickory-dns"]
-rustls-tls = ["reqwest/rustls-tls", "google-cloud-auth?/rustls-tls"]
 jwt-aws-lc-rs = ["google-cloud-auth?/jwt-aws-lc-rs"]
 jwt-rust-crypto = ["google-cloud-auth?/jwt-rust-crypto"]
 trace = []
