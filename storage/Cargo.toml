@@ -28,7 +28,7 @@ reqwest = {version = "0.12", features = [
   "json",
   "stream",
   "multipart",
-], default-features = false}
+]}
 reqwest-middleware = {version = "0.4", features = ["json", "multipart"]}
 ring = "0.17"
 serde = {version = "1.0", features = ["derive"]}
