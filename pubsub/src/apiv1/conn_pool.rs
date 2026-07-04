@@ -23,7 +23,7 @@ impl ConnectionManager {
         conn_options: &ConnectionOptions,
     ) -> Result<Self, Error> {
         // Derive endpoint URL from domain to support regional endpoints
-        let endpoint_url = format!("https://{}/", domain);
+        let endpoint_url = format!("https://{domain}/");
         Ok(ConnectionManager {
             inner: GRPCConnectionManager::new(pool_size, domain, &endpoint_url, environment, conn_options).await?,
         })

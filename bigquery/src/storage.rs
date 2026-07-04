@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{BufReader, Cursor};
 
+use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 pub use arrow::*;
@@ -130,6 +131,107 @@ where
                 for row_no in 0..row.num_rows() {
                     chunk.push_back(T::decode_arrow(row.columns(), row_no)?)
                 }
+            }
+            Ok(chunk)
+        }
+        _ => Err(Error::InvalidDataFormat),
+    }
+}
+
+/// Streams Arrow `RecordBatch`es directly from the BigQuery Storage Read API without
+/// per-row decoding. Prefer this over [`Iterator`] when the consumer wants columnar
+/// Arrow output.
+pub struct RecordBatchIterator {
+    client: StreamingReadClient,
+    session: ReadSession,
+    retry: Option<RetrySetting>,
+    stream_index: usize,
+    current_stream: Streaming<ReadRowsResponse>,
+    chunk: VecDeque<RecordBatch>,
+    schema: Option<ArrowSchema>,
+}
+
+impl RecordBatchIterator {
+    pub async fn new(
+        mut client: StreamingReadClient,
+        session: ReadSession,
+        retry: Option<RetrySetting>,
+    ) -> Result<Self, Error> {
+        let current_stream = client
+            .read_rows(
+                ReadRowsRequest {
+                    read_stream: session.streams[0].name.to_string(),
+                    offset: 0,
+                },
+                retry.clone(),
+            )
+            .await?
+            .into_inner();
+        Ok(Self {
+            client,
+            session,
+            retry,
+            current_stream,
+            stream_index: 0,
+            chunk: VecDeque::new(),
+            schema: None,
+        })
+    }
+
+    /// Returns the next `RecordBatch`. `None` once all streams are exhausted.
+    pub async fn next(&mut self) -> Result<Option<RecordBatch>, Error> {
+        loop {
+            if let Some(batch) = self.chunk.pop_front() {
+                return Ok(Some(batch));
+            }
+            if let Some(rows) = self.current_stream.message().await? {
+                if self.schema.is_none() {
+                    match rows.schema.ok_or(Error::NoSchemaFound)? {
+                        Schema::ArrowSchema(schema) => self.schema = Some(schema),
+                        _ => return Err(Error::InvalidSchemaFormat),
+                    }
+                };
+                if let Some(rows) = rows.rows {
+                    self.chunk = rows_to_record_batches(self.schema.clone().unwrap(), rows)?;
+                    if let Some(batch) = self.chunk.pop_front() {
+                        return Ok(Some(batch));
+                    }
+                }
+                continue;
+            }
+
+            if self.stream_index == self.session.streams.len() - 1 {
+                return Ok(None);
+            } else {
+                self.stream_index += 1
+            }
+            let stream = &self.session.streams[self.stream_index].name;
+            self.current_stream = self
+                .client
+                .read_rows(
+                    ReadRowsRequest {
+                        read_stream: stream.to_string(),
+                        offset: 0,
+                    },
+                    self.retry.clone(),
+                )
+                .await?
+                .into_inner();
+        }
+    }
+}
+
+fn rows_to_record_batches(schema: ArrowSchema, rows: Rows) -> Result<VecDeque<RecordBatch>, Error> {
+    match rows {
+        Rows::ArrowRecordBatch(rows) => {
+            let mut rows_with_schema = schema.serialized_schema;
+            rows_with_schema.extend_from_slice(&rows.serialized_record_batch);
+            let cursor = Cursor::new(rows_with_schema);
+            let reader: StreamReader<BufReader<Cursor<Vec<u8>>>> =
+                StreamReader::try_new(BufReader::new(cursor), None)?;
+            let mut chunk: VecDeque<RecordBatch> = VecDeque::new();
+            for batch in reader {
+                chunk.push_back(batch?);
             }
             Ok(chunk)
         }

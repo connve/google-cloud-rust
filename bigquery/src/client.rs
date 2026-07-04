@@ -795,10 +795,51 @@ impl Client {
     where
         T: storage::value::StructDecodable,
     {
-        let option = option.unwrap_or_default();
+        let s = self
+            .create_storage_read_session(table, option.unwrap_or_default())
+            .await?;
+        storage::Iterator::new(s.client, s.session, s.read_rows_retry).await
+    }
 
+    /// Read table data by BigQuery Storage Read API and yield Arrow `RecordBatch`es directly.
+    ///
+    /// Alternative to [`Client::read_table`] for consumers that want columnar Arrow output
+    /// without paying the cost of per-row decoding via `StructDecodable`.
+    ///
+    /// ```rust
+    /// use google_cloud_bigquery::client::Client;
+    /// use google_cloud_bigquery::http::table::TableReference;
+    ///
+    /// async fn run(client: &Client, project_id: &str) {
+    ///     let table = TableReference {
+    ///         project_id: project_id.to_string(),
+    ///         dataset_id: "dataset".to_string(),
+    ///         table_id: "table".to_string(),
+    ///     };
+    ///     let mut iter = client.read_table_record_batches(&table, None).await.unwrap();
+    ///     while let Some(batch) = iter.next().await.unwrap() {
+    ///         let _num_rows = batch.num_rows();
+    ///     }
+    /// }
+    /// ```
+    pub async fn read_table_record_batches(
+        &self,
+        table: &TableReference,
+        option: Option<ReadTableOption>,
+    ) -> Result<storage::RecordBatchIterator, storage::Error> {
+        let s = self
+            .create_storage_read_session(table, option.unwrap_or_default())
+            .await?;
+        storage::RecordBatchIterator::new(s.client, s.session, s.read_rows_retry).await
+    }
+
+    async fn create_storage_read_session(
+        &self,
+        table: &TableReference,
+        option: ReadTableOption,
+    ) -> Result<StorageReadSession, storage::Error> {
         let mut client = StreamingReadClient::new(BigQueryReadClient::new(self.streaming_read_conn_pool.conn()));
-        let read_session = client
+        let session = client
             .create_read_session(
                 CreateReadSessionRequest {
                     parent: format!("projects/{}", option.job_project_id.as_ref().unwrap_or(&table.project_id)),
@@ -823,8 +864,18 @@ impl Client {
             )
             .await?
             .into_inner();
-        storage::Iterator::new(client, read_session, option.read_rows_retry_setting).await
+        Ok(StorageReadSession {
+            client,
+            session,
+            read_rows_retry: option.read_rows_retry_setting,
+        })
     }
+}
+
+struct StorageReadSession {
+    client: StreamingReadClient,
+    session: ReadSession,
+    read_rows_retry: Option<RetrySetting>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1167,6 +1218,15 @@ mod tests {
             .read_table::<crate::storage::row::Row>(&table, Some(option))
             .await
             .unwrap();
+        let mut iterator_as_batch = client.read_table_record_batches(&table, None).await.unwrap();
+        let mut batch_row_count: usize = 0;
+        let mut batch_count: usize = 0;
+        while let Some(batch) = iterator_as_batch.next().await.unwrap() {
+            batch_row_count += batch.num_rows();
+            batch_count += 1;
+        }
+        assert_eq!(batch_row_count, 3);
+        assert!(batch_count >= 1);
         let mut data_as_row: Vec<TestData> = vec![];
         let mut data_as_struct: Vec<TestData> = vec![];
         let mut finish1 = false;
