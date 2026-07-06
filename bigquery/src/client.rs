@@ -676,6 +676,105 @@ impl Client {
         })
     }
 
+    /// Run query and get result as Arrow `RecordBatch`es via the Storage Read backend.
+    ///
+    /// Alternative to [`Client::query_with_option`] for consumers that want columnar Arrow
+    /// output without per-row decoding. Always uses Storage Read — requires the job to
+    /// produce a destination table (normal for non-trivial queries). Returns
+    /// [`storage::Error::from`]-wrapped errors via [`QueryError`] when the job has no
+    /// destination table.
+    ///
+    /// ```rust
+    /// use google_cloud_bigquery::http::job::query::QueryRequest;
+    /// use google_cloud_bigquery::client::Client;
+    /// use google_cloud_bigquery::query::QueryOption;
+    ///
+    /// async fn run(client: &Client, project_id: &str) {
+    ///     let request = QueryRequest {
+    ///         query: "SELECT * FROM dataset.table".to_string(),
+    ///         ..Default::default()
+    ///     };
+    ///     let mut iter = client
+    ///         .query_record_batches(project_id, request, QueryOption::default())
+    ///         .await
+    ///         .unwrap();
+    ///     while let Some(batch) = iter.next().await.unwrap() {
+    ///         let _num_rows = batch.num_rows();
+    ///     }
+    /// }
+    /// ```
+    pub async fn query_record_batches(
+        &self,
+        project_id: &str,
+        request: QueryRequest,
+        option: QueryOption,
+    ) -> Result<storage::RecordBatchIterator, QueryError> {
+        let result = self.job_client.query(project_id, &request).await?;
+        if !result.job_complete {
+            self.wait_for_query(&result.job_reference, option.retry, &request.timeout_ms)
+                .await?;
+        }
+        let job = self
+            .job_client
+            .get(
+                &result.job_reference.project_id,
+                &result.job_reference.job_id,
+                &GetJobRequest {
+                    location: result.job_reference.location.clone(),
+                },
+            )
+            .await?;
+        self.new_storage_record_batch_iterator_from_job(job.job_reference, job.statistics, job.configuration)
+            .await
+    }
+
+    async fn new_storage_record_batch_iterator_from_job(
+        &self,
+        mut job: JobReference,
+        mut statistics: Option<JobStatistics>,
+        mut config: JobConfiguration,
+    ) -> Result<storage::RecordBatchIterator, QueryError> {
+        loop {
+            tracing::trace!("check child job result {:?}, {:?}, {:?}", job, statistics, config);
+            let query_config = match &config.job {
+                JobType::Query(config) => config,
+                _ => return Err(QueryError::InvalidJobType(job.clone(), config.job_type.clone())),
+            };
+            if let Some(dst) = &query_config.destination_table {
+                return Ok(self.read_table_record_batches(dst, None).await?);
+            }
+            if !is_script(&statistics, &config) {
+                return Err(QueryError::NoDestinationTable(job.clone()));
+            }
+            let children = self
+                .job_client
+                .list(
+                    &job.project_id,
+                    &ListJobsRequest {
+                        parent_job_id: job.job_id.to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+            let mut found = false;
+            for j in children.into_iter() {
+                if !is_select_query(&j.statistics, &j.configuration) {
+                    continue;
+                }
+                job = j.job_reference;
+                statistics = j.statistics;
+                config = j.configuration;
+                found = true;
+                break;
+            }
+            if !found {
+                break;
+            }
+        }
+        Err(QueryError::NoChildJobs(job.clone()))
+    }
+
     async fn new_storage_row_iterator_from_job<T>(
         &self,
         mut job: JobReference,
@@ -971,6 +1070,32 @@ mod tests {
     async fn test_query_from_rest() {
         let option = QueryOption::default();
         test_query(option).await
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_query_record_batches() {
+        let (client, project_id) = create_client().await;
+        let mut iter = client
+            .query_record_batches(
+                &project_id,
+                QueryRequest {
+                    query: "SELECT n FROM UNNEST(GENERATE_ARRAY(1, 3)) AS n".to_string(),
+                    ..Default::default()
+                },
+                QueryOption::default(),
+            )
+            .await
+            .unwrap();
+        let mut total_rows: usize = 0;
+        let mut batch_count: usize = 0;
+        while let Some(batch) = iter.next().await.unwrap() {
+            assert_eq!(batch.num_columns(), 1);
+            total_rows += batch.num_rows();
+            batch_count += 1;
+        }
+        assert_eq!(total_rows, 3);
+        assert!(batch_count >= 1);
     }
 
     async fn test_query(option: QueryOption) {
